@@ -1,42 +1,47 @@
 "use client";
 
+import { WebSocketProvider } from "@/hooks/WebSocketProvider";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
-import { FeatureCards } from "@/components/landing/FeatureCards";
-import { HowItWorks } from "@/components/landing/HowItWorks";
-import { AgentShowcase } from "@/components/landing/AgentShowcase";
+import { InlineDemo } from "@/components/landing/InlineDemo";
 import { KitePillars } from "@/components/landing/KitePillars";
-import { ContractsTable } from "@/components/landing/ContractsTable";
+import { HowItWorks } from "@/components/landing/HowItWorks";
+import { OnChainProof } from "@/components/landing/OnChainProof";
+import { AgentShowcase } from "@/components/landing/AgentShowcase";
+import { ZeroCostBand } from "@/components/landing/ZeroCostBand";
 import { Footer } from "@/components/landing/Footer";
 
 /**
  * Landing Page (/)
  *
- * Marketing page explaining NEXUS to hackathon judges.
- * All sections are live: Agent Showcase fetches from /api/agents,
- * Hero stats fetch from /api/stats. The dashboard lives at /dashboard.
+ * Judge flow:
+ *   1. Hero — insight + live counters, "this is real" in 5s
+ *   2. InlineDemo — judge runs a real query without leaving the page
+ *   3. KitePillars — proof layer: Passport + x402 + Verified Intent
+ *   4. HowItWorks — 5-step flow
+ *   5. OnChainProof — recent tx hashes + contracts
+ *   6. AgentShowcase — live marketplace grid
+ *   7. ZeroCostBand — $0/month operating cost chip strip
+ *   8. Footer
  *
- * Sections:
- * 1. Navbar (sticky)
- * 2. Hero (headline + live stats + CTAs)
- * 3. Feature Cards (3 pillars of NEXUS)
- * 4. How It Works (5-step visual stepper)
- * 5. Agent Showcase (live grid from API)
- * 6. Kite Pillars (identity, payments, governance)
- * 7. Contracts Table (4 deployed contracts with explorer links)
- * 8. Footer
+ * The whole page shares a single WebSocket via WebSocketProvider so the
+ * InlineDemo's live activity strip and the Hero counters reflect the
+ * same event stream without duplicate connections.
  */
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-[var(--color-bg)]">
-      <Navbar />
-      <Hero />
-      <FeatureCards />
-      <HowItWorks />
-      <AgentShowcase />
-      <KitePillars />
-      <ContractsTable />
-      <Footer />
-    </div>
+    <WebSocketProvider>
+      <div className="min-h-screen bg-[var(--color-bg)]">
+        <Navbar />
+        <Hero />
+        <InlineDemo />
+        <KitePillars />
+        <HowItWorks />
+        <OnChainProof />
+        <AgentShowcase />
+        <ZeroCostBand />
+        <Footer />
+      </div>
+    </WebSocketProvider>
   );
 }

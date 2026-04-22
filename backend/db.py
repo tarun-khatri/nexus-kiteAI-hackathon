@@ -17,10 +17,35 @@ faster/richer data, the chain is the authoritative reputation source.
 """
 
 import os
+import asyncio
 import aiosqlite
 import json
 from datetime import datetime
 from pathlib import Path
+
+
+# Serializes all SQLite WRITES from inside this process. SQLite only allows
+# one writer at a time; when our orchestrator kicks off save_mandate +
+# save_transaction + save_audit_trail concurrently (all via
+# asyncio.ensure_future), two of them can race for the write lock and one
+# fails with "database is locked". Gate them through this single lock so
+# writes serialize cleanly. Reads are unaffected — WAL mode (set in
+# init_db) lets them run in parallel with a writer.
+_db_write_lock = asyncio.Lock()
+
+
+async def _open_writable():
+    """
+    Open a connection tuned for short write bursts:
+      - busy_timeout: if SQLite still sees a lock (e.g. from an external
+        process), wait up to 5s for it to clear instead of erroring.
+      - synchronous=NORMAL: faster commits; safe with WAL.
+    WAL journal mode is set once in init_db and persists in the DB file.
+    """
+    db = await aiosqlite.connect(DB_PATH)
+    await db.execute("PRAGMA busy_timeout=5000")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    return db
 
 # DB location. Default sits next to this file (dev mode). In production,
 # set NEXUS_DB_PATH to a path inside a persistent Docker volume so data
@@ -42,6 +67,11 @@ Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 async def init_db():
     """Initialize all tables if they don't exist."""
     async with aiosqlite.connect(DB_PATH) as db:
+        # WAL (write-ahead-log) mode lets readers and a single writer work
+        # concurrently. Persists in the DB file header, so we only set it once.
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await db.execute("""CREATE TABLE IF NOT EXISTS transactions (
             id TEXT PRIMARY KEY,
             from_agent TEXT NOT NULL,
@@ -127,22 +157,26 @@ async def init_db():
 async def save_transaction(tx: dict):
     """Persist a transaction record."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO transactions VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    tx.get("tx_id", ""),
-                    tx.get("from_agent", ""),
-                    tx.get("to_agent", ""),
-                    tx.get("amount", 0),
-                    tx.get("purpose", ""),
-                    tx.get("tx_hash", ""),
-                    tx.get("status", ""),
-                    tx.get("mandate_id", ""),
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT OR REPLACE INTO transactions VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        tx.get("tx_id", ""),
+                        tx.get("from_agent", ""),
+                        tx.get("to_agent", ""),
+                        tx.get("amount", 0),
+                        tx.get("purpose", ""),
+                        tx.get("tx_hash", ""),
+                        tx.get("status", ""),
+                        tx.get("mandate_id", ""),
+                        datetime.utcnow().isoformat(),
+                    ),
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception as e:
         print(f"[DB] Error saving transaction: {e}")
 
@@ -150,21 +184,25 @@ async def save_transaction(tx: dict):
 async def save_audit_trail(trail: dict):
     """Persist an audit trail entry."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO audit_trails VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    trail.get("trail_id", ""),
-                    trail.get("mandate_id", ""),
-                    trail.get("traceability_hash", ""),
-                    trail.get("report_hash", ""),
-                    trail.get("on_chain_tx_hash", ""),
-                    trail.get("explorer_url", ""),
-                    trail.get("query", ""),
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT OR REPLACE INTO audit_trails VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        trail.get("trail_id", ""),
+                        trail.get("mandate_id", ""),
+                        trail.get("traceability_hash", ""),
+                        trail.get("report_hash", ""),
+                        trail.get("on_chain_tx_hash", ""),
+                        trail.get("explorer_url", ""),
+                        trail.get("query", ""),
+                        datetime.utcnow().isoformat(),
+                    ),
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception as e:
         print(f"[DB] Error saving audit trail: {e}")
 
@@ -172,12 +210,16 @@ async def save_audit_trail(trail: dict):
 async def save_reputation_event(agent_name: str, old_score: int, new_score: int, change: int, reason: str):
     """Persist a reputation change event."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO reputation_events (agent_name, old_score, new_score, change, reason, timestamp) VALUES (?,?,?,?,?,?)",
-                (agent_name, old_score, new_score, change, reason, datetime.utcnow().isoformat()),
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT INTO reputation_events (agent_name, old_score, new_score, change, reason, timestamp) VALUES (?,?,?,?,?,?)",
+                    (agent_name, old_score, new_score, change, reason, datetime.utcnow().isoformat()),
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception as e:
         print(f"[DB] Error saving reputation event: {e}")
 
@@ -185,22 +227,26 @@ async def save_reputation_event(agent_name: str, old_score: int, new_score: int,
 async def save_mandate(mandate: dict):
     """Persist a mandate record."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO mandates VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    mandate.get("mandate_id", ""),
-                    mandate.get("query", ""),
-                    mandate.get("context_hash", ""),
-                    mandate.get("total_budget", 0),
-                    mandate.get("total_spent", 0),
-                    mandate.get("status", ""),
-                    mandate.get("signature", ""),
-                    mandate.get("signer_address", ""),
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT OR REPLACE INTO mandates VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        mandate.get("mandate_id", ""),
+                        mandate.get("query", ""),
+                        mandate.get("context_hash", ""),
+                        mandate.get("total_budget", 0),
+                        mandate.get("total_spent", 0),
+                        mandate.get("status", ""),
+                        mandate.get("signature", ""),
+                        mandate.get("signer_address", ""),
+                        datetime.utcnow().isoformat(),
+                    ),
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception as e:
         print(f"[DB] Error saving mandate: {e}")
 
@@ -208,28 +254,32 @@ async def save_mandate(mandate: dict):
 async def save_marketplace_agent(agent: dict):
     """Persist a marketplace agent registration."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO marketplace_agents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    agent.get("agent_id", ""),
-                    agent.get("name", ""),
-                    agent.get("description", ""),
-                    json.dumps(agent.get("capabilities") or []),
-                    json.dumps(agent.get("keywords") or []),
-                    json.dumps(agent.get("example_queries") or []),
-                    agent.get("price_per_query", 0),
-                    agent.get("callback_url", ""),
-                    agent.get("owner_address", ""),
-                    agent.get("passport_id", "") or "",
-                    int(agent.get("reputation_score", 50)),
-                    int(agent.get("total_jobs", 0)),
-                    1 if agent.get("active", True) else 0,
-                    agent.get("registered_at") or datetime.utcnow().isoformat(),
-                    agent.get("last_invoked") or "",
-                ),
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT OR REPLACE INTO marketplace_agents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        agent.get("agent_id", ""),
+                        agent.get("name", ""),
+                        agent.get("description", ""),
+                        json.dumps(agent.get("capabilities") or []),
+                        json.dumps(agent.get("keywords") or []),
+                        json.dumps(agent.get("example_queries") or []),
+                        agent.get("price_per_query", 0),
+                        agent.get("callback_url", ""),
+                        agent.get("owner_address", ""),
+                        agent.get("passport_id", "") or "",
+                        int(agent.get("reputation_score", 50)),
+                        int(agent.get("total_jobs", 0)),
+                        1 if agent.get("active", True) else 0,
+                        agent.get("registered_at") or datetime.utcnow().isoformat(),
+                        agent.get("last_invoked") or "",
+                    ),
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception as e:
         print(f"[DB] Error saving marketplace agent: {e}")
 
@@ -475,16 +525,20 @@ async def get_audit_trail_count() -> int:
 async def save_ws_event(event_json: str):
     """Persist a WebSocket event so the transaction feed survives restarts."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO ws_events (event_json, timestamp) VALUES (?, ?)",
-                (event_json, datetime.utcnow().isoformat()),
-            )
-            # Keep only the last 500 events to prevent table bloat.
-            await db.execute(
-                "DELETE FROM ws_events WHERE id NOT IN (SELECT id FROM ws_events ORDER BY id DESC LIMIT 500)"
-            )
-            await db.commit()
+        async with _db_write_lock:
+            db = await _open_writable()
+            try:
+                await db.execute(
+                    "INSERT INTO ws_events (event_json, timestamp) VALUES (?, ?)",
+                    (event_json, datetime.utcnow().isoformat()),
+                )
+                # Keep only the last 500 events to prevent table bloat.
+                await db.execute(
+                    "DELETE FROM ws_events WHERE id NOT IN (SELECT id FROM ws_events ORDER BY id DESC LIMIT 500)"
+                )
+                await db.commit()
+            finally:
+                await db.close()
     except Exception:
         pass  # best-effort
 

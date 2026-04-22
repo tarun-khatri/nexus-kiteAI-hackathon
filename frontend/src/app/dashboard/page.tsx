@@ -69,6 +69,29 @@ function DashboardInner() {
     }
   }, [events]);
 
+  // Restore a report from sessionStorage when arriving via /dashboard?report=<id>.
+  // The landing page's InlineDemo stashes the full report JSON before navigating
+  // here, so judges can click "Open full report" and see the detailed view.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const reportId = params.get("report");
+    if (!reportId) return;
+    try {
+      const cached = sessionStorage.getItem(`nexus:report:${reportId}`);
+      if (cached) {
+        const parsed = JSON.parse(cached) as Report;
+        setReport(parsed);
+        // One-shot: clear the param so a refresh doesn't re-hydrate stale data
+        const url = new URL(window.location.href);
+        url.searchParams.delete("report");
+        window.history.replaceState({}, "", url.toString());
+      }
+    } catch {
+      // ignore — dashboard shows empty-state prompt
+    }
+  }, []);
+
   const handleSubmit = async () => {
     if (!query.trim() || loading) return;
     setLoading(true);

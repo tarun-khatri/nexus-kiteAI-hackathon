@@ -72,7 +72,9 @@ class LLMRouter:
     # Hard per-provider timeout. Anything longer is treated as a hang and the
     # router falls through to the next provider. Prevents one stuck API call
     # from stalling the entire query pipeline (seen: Groq hanging for 100s+).
-    PROVIDER_TIMEOUT_SECONDS = 20.0
+    # 45s accommodates Groq's 70B model on longer report-summary prompts
+    # (~1-3k tokens) which can take 25-35s under load on the free tier.
+    PROVIDER_TIMEOUT_SECONDS = 45.0
 
     async def generate(self, prompt: str, system_prompt: str = "", max_tokens: int = 1024) -> str:
         """

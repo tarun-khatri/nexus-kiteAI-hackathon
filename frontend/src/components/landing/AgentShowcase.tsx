@@ -42,7 +42,16 @@ export function AgentShowcase() {
 
   useEffect(() => {
     getAgents()
-      .then((data) => setAgents(data.agents || []))
+      .then((data) => {
+        // Hide on_chain_only entries — those are historical/inactive
+        // passport rows pulled from AgentRegistry, not callable services.
+        // The landing page should only show agents that can actually
+        // serve queries right now.
+        const active = (data.agents || []).filter(
+          (a) => a.source_type !== "on_chain_only",
+        );
+        setAgents(active);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);

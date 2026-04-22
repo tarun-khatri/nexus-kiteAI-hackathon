@@ -6,6 +6,7 @@ import { NexusLogo } from "@/components/ui/NexusLogo";
 import { Menu, X } from "lucide-react";
 
 const NAV_LINKS = [
+  { label: "Live Demo", href: "#demo" },
   { label: "How It Works", href: "#how-it-works" },
   { label: "Agents", href: "#agents" },
   { label: "Contracts", href: "#contracts" },

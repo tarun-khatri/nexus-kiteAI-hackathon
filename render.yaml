@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: nexus-backend
+    runtime: python
+    region: oregon
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "python -m backend.main"
+    envVars:
+      - key: BACKEND_HOST
+        value: "0.0.0.0"
+      - key: BACKEND_PORT
+        value: "8000"

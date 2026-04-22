@@ -1,0 +1,51 @@
+# NEXUS - The Living Agent Economy on Kite Chain
+# Minimum versions that we know work. Newer versions are fine.
+
+# === Web Framework ===
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+# websockets: must be <14 to satisfy web3 7.x
+websockets>=13.0,<14.0
+python-multipart>=0.0.18,<1.0
+
+# === HTTP Client ===
+httpx>=0.27,<1.0
+aiohttp>=3.11,<4.0
+
+# === Data Validation ===
+pydantic>=2.10,<3.0
+pydantic-settings>=2.7,<3.0
+
+# === Environment Variables ===
+python-dotenv>=1.0,<2.0
+
+# === LLM Clients (All Free Tiers) ===
+groq>=0.15,<1.0
+google-generativeai>=0.8,<1.0
+ollama>=0.4,<1.0
+
+# === Data & Analysis (All Free, Local) ===
+vaderSentiment>=3.3,<4.0
+pandas>=2.2,<4.0
+numpy>=2.2,<3.0
+feedparser>=6.0,<7.0
+textblob>=0.18,<1.0
+
+# === Blockchain (Kite EVM Compatible) ===
+web3>=7.6,<8.0
+eth-account>=0.13,<1.0
+
+# === Agent Orchestration (Free, Open-Source) ===
+langgraph>=0.2,<1.0
+
+# === Persistence ===
+aiosqlite>=0.20,<1.0
+
+# === Testing ===
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<2.0
+
+# === Utilities ===
+python-dateutil>=2.9,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.3,<7.0

@@ -1,0 +1,111 @@
+# NEXUS — single-host production topology (works for local dev too).
+#
+# Launch:
+#   docker compose --env-file .env.prod up -d --build
+#
+# On a laptop without .env.prod, defaults fall back to localhost so
+# `docker compose up -d --build` still works for development.
+#
+# PUBLIC_HOST / PUBLIC_URL / PUBLIC_WS_URL come from .env.prod on the VM, e.g.
+#   PUBLIC_HOST=3-14-159-26.nip.io
+#   PUBLIC_URL=https://3-14-159-26.nip.io
+#   PUBLIC_WS_URL=wss://3-14-159-26.nip.io
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PUBLIC_HOST=${PUBLIC_HOST:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      - BACKEND_HOST=0.0.0.0
+      - BACKEND_PORT=8000
+      # Force DB to land on a mounted volume so data survives restarts.
+      - NEXUS_DB_PATH=/app/data/nexus.db
+      # Backend reaches the twitter microservice via its Docker service name,
+      # not localhost (localhost inside backend container = backend container).
+      - TWITTER_SERVICE_URL=http://twitter-service:3001
+      # Unbuffered stdout so our print() lifecycle logs appear immediately in
+      # `docker compose logs backend` instead of being held in Python's buffer.
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Named volume mounted at /app/data holds nexus.db + any future
+      # backend-written state (audit trail cache, etc.). Survives `down`.
+      - nexus_data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the browser bundle at build time. Change -> rebuild image.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:8000}
+        NEXT_PUBLIC_WS_URL: ${PUBLIC_WS_URL:-ws://localhost:8000/ws}
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  twitter-service:
+    build:
+      context: ./twitter-service
+    restart: unless-stopped
+    environment:
+      - TWITTER_SERVICE_PORT=3001
+    env_file:
+      - .env.prod
+
+  defi-agent:
+    build:
+      context: ./example-agents/defi-agent
+    restart: unless-stopped
+    environment:
+      - NEXUS_URL=http://backend:8000
+      - AGENT_PORT=5001
+      - PUBLIC_URL=http://defi-agent:5001
+    depends_on:
+      - backend
+
+  dexscreener-agent:
+    build:
+      context: ./example-agents/dexscreener-agent
+    restart: unless-stopped
+    environment:
+      - NEXUS_URL=http://backend:8000
+      - AGENT_PORT=5002
+      - PUBLIC_URL=http://dexscreener-agent:5002
+    depends_on:
+      - backend
+
+  security-agent:
+    build:
+      context: ./example-agents/security-agent
+    restart: unless-stopped
+    environment:
+      - NEXUS_URL=http://backend:8000
+      - AGENT_PORT=5003
+      - PUBLIC_URL=http://security-agent:5003
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:
+  nexus_data:

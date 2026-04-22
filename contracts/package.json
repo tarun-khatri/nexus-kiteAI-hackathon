@@ -1,0 +1,19 @@
+{
+  "name": "nexus-contracts",
+  "version": "1.0.0",
+  "description": "NEXUS smart contracts for Kite Chain",
+  "scripts": {
+    "compile": "npx hardhat compile",
+    "test": "npx hardhat test",
+    "deploy:local": "npx hardhat run deploy/deploy.js --network hardhat",
+    "deploy:kite": "npx hardhat run deploy/deploy.js --network kiteTestnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0",
+    "dotenv": "^16.4.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.1.0"
+  }
+}

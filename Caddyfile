@@ -1,0 +1,32 @@
+# NEXUS production reverse proxy.
+# PUBLIC_HOST is injected via docker-compose env from .env.prod, e.g.
+# PUBLIC_HOST=44-215-246-131.nip.io
+#
+# Caddy auto-provisions + renews a Let's Encrypt cert for this hostname on
+# first request (HTTP-01 challenge on port 80). Stored in the caddy_data volume.
+
+{$PUBLIC_HOST} {
+    encode zstd gzip
+
+    # WebSocket endpoints. Caddy's reverse_proxy auto-handles Upgrade/Connection
+    # headers for WebSocket upgrades — no special matcher needed.
+    handle /ws {
+        reverse_proxy backend:8000
+    }
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    # Backend REST + x402 endpoints go to the FastAPI backend.
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+    handle /x402/* {
+        reverse_proxy backend:8000
+    }
+
+    # Everything else (including Next.js static + pages) goes to the frontend.
+    handle {
+        reverse_proxy frontend:3000
+    }
+}

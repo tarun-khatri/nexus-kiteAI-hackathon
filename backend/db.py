@@ -146,6 +146,29 @@ async def init_db():
             timestamp TEXT NOT NULL
         )""")
 
+        # Market Pulse — autonomous scheduler runs. Every row represents one
+        # self-triggered query that went through the full orchestrator pipeline
+        # (mandate → x402 payments → audit trail). `trigger_source` = 'scheduled'
+        # for the asyncio loop, 'manual' for POST /api/pulse/trigger.
+        await db.execute("""CREATE TABLE IF NOT EXISTS pulse_runs (
+            run_id TEXT PRIMARY KEY,
+            query TEXT NOT NULL,
+            trigger_source TEXT NOT NULL,
+            report_id TEXT,
+            summary TEXT,
+            status TEXT,
+            agents_involved INTEGER,
+            total_cost_usdc REAL,
+            total_time_ms INTEGER,
+            audit_tx_hash TEXT,
+            payment_tx_hashes_json TEXT,
+            mandate_id TEXT,
+            error_message TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        )""")
+        await db.execute("""CREATE INDEX IF NOT EXISTS idx_pulse_started ON pulse_runs(started_at DESC)""")
+
         await db.commit()
     print("[DB] SQLite persistence initialized")
 

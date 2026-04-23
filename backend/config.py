@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     public_url: str = "http://localhost:8000"  # Public base URL for x402 resource fields
 
+    # --- Market Pulse (autonomous trigger) ---
+    # A background asyncio loop that fires queries through the full orchestrator
+    # pipeline without human involvement. Each run produces real x402 payments
+    # and an on-chain audit trail. Set PULSE_ENABLED=false to disable (useful in
+    # local dev to avoid burning faucet balance).
+    pulse_enabled: bool = True
+    pulse_interval_seconds: int = 600          # 10 min between scheduled runs
+    pulse_initial_delay_seconds: int = 120     # wait 2 min after boot before first run
+
     class Config:
         env_file = "backend/.env"
         env_file_encoding = "utf-8"

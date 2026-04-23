@@ -141,6 +141,27 @@ export function Hero() {
             <p className="text-xs text-[var(--color-text-muted)]">
               No signup · Real on-chain payments · ~15s end-to-end
             </p>
+
+            {/* Autonomous-pulse badge — links judges to live self-running feed */}
+            <Link
+              href="/pulse"
+              className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-white hover:border-[var(--color-green)] transition-colors no-underline group"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--color-green)] opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--color-green)]" />
+              </span>
+              <span className="text-xs text-[var(--color-text-secondary)] group-hover:text-[var(--color-text)]">
+                Autonomous pulse running —{" "}
+                <span className="font-semibold text-[var(--color-text)]">
+                  see live runs
+                </span>
+                <ArrowRight
+                  size={12}
+                  className="inline-block ml-1 -mb-0.5"
+                />
+              </span>
+            </Link>
           </div>
 
           {/* RIGHT — Live counters panel */}

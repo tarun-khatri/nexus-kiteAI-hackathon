@@ -355,3 +355,54 @@ export async function getAgentReputation(agentId: string): Promise<{
   const res = await fetch(`${API_BASE}/api/reputation/${agentId}`);
   return res.json();
 }
+
+// === Market Pulse (autonomous trigger) ===
+export interface PulseRun {
+  run_id: string;
+  query: string;
+  trigger_source: "scheduled" | "manual";
+  report_id: string | null;
+  summary: string | null;
+  status: "ok" | "partial" | "error";
+  agents_involved: number;
+  total_cost_usdc: number;
+  total_time_ms: number;
+  audit_tx_hash: string | null;
+  payment_tx_hashes: string[];
+  mandate_id: string | null;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface PulseStatus {
+  enabled: boolean;
+  running: boolean;
+  interval_seconds: number;
+  initial_delay_seconds: number;
+  watchlist_size: number;
+  watchlist_next_index: number;
+  run_count: number;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  seconds_since_last_run: number | null;
+}
+
+export async function getPulseRuns(
+  limit: number = 50,
+): Promise<{ runs: PulseRun[]; total: number; explorer_base: string }> {
+  const res = await fetch(`${API_BASE}/api/pulse?limit=${limit}`);
+  return res.json();
+}
+
+export async function getPulseStatus(): Promise<PulseStatus> {
+  const res = await fetch(`${API_BASE}/api/pulse/status`);
+  return res.json();
+}
+
+export async function triggerPulse(): Promise<
+  PulseRun | { error: string; message: string; retry_after_seconds?: number }
+> {
+  const res = await fetch(`${API_BASE}/api/pulse/trigger`, { method: "POST" });
+  return res.json();
+}

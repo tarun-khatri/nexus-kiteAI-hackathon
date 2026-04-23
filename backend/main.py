@@ -300,6 +300,21 @@ async def lifespan(app: FastAPI):
         "verified_intent": True,
     })
 
+    # === Step 8: Market Pulse (autonomous trigger) ===
+    # Background loop that periodically fires a watchlist query through the
+    # full orchestrator pipeline — real mandates, real x402 payments, real
+    # audit trails, no human in the loop. Disabled via PULSE_ENABLED=false.
+    if settings.pulse_enabled:
+        from backend.pulse.scheduler import pulse_scheduler
+        app.state.pulse_task = asyncio.create_task(pulse_scheduler.run())
+        print(
+            f"[Pulse] Autonomous trigger: ACTIVE "
+            f"(initial delay {settings.pulse_initial_delay_seconds}s, "
+            f"then every {settings.pulse_interval_seconds}s)"
+        )
+    else:
+        print("[Pulse] Autonomous trigger: DISABLED (PULSE_ENABLED=false)")
+
     yield
 
     # Shutdown
@@ -309,6 +324,13 @@ async def lifespan(app: FastAPI):
         sync_task.cancel()
         try:
             await sync_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    pulse_task = getattr(app.state, "pulse_task", None)
+    if pulse_task is not None:
+        pulse_task.cancel()
+        try:
+            await pulse_task
         except (asyncio.CancelledError, Exception):
             pass
     await data_agent.cleanup()
@@ -794,6 +816,90 @@ async def onchain_history(limit: int = 50):
         "chain_id": 2368,
         "explorer_base": "https://testnet.kitescan.ai",
     }
+
+
+# ============================================================
+# Market Pulse API — autonomous trigger runs
+# ============================================================
+
+import time as _time_for_pulse  # for the per-IP rate limiter below
+from fastapi import Request as _PulseRequest
+from fastapi.responses import JSONResponse as _PulseJSONResponse
+
+# In-memory per-IP rate limiter for manual trigger. Dies on restart — good
+# enough for a demo. Prevents a judge accidentally DoS'ing the faucet wallet
+# by spamming the "Trigger run now" button.
+_pulse_trigger_last_call_by_ip: dict[str, float] = {}
+_PULSE_TRIGGER_MIN_INTERVAL_SEC = 60
+
+
+@app.get("/api/pulse")
+async def pulse_list(limit: int = 50):
+    """
+    Return the most recent Market Pulse runs — newest first. Each row is one
+    fully-orchestrated, fully-settled run: mandate + x402 payments + audit
+    trail recorded on Kite testnet. The /pulse page renders this.
+    """
+    from backend.pulse.store import load_pulse_runs, count_pulse_runs
+    runs = await load_pulse_runs(limit=limit)
+    total = await count_pulse_runs()
+    return {
+        "runs": runs,
+        "total": total,
+        "explorer_base": "https://testnet.kitescan.ai",
+    }
+
+
+@app.get("/api/pulse/status")
+async def pulse_status():
+    """Current scheduler state — interval, next/last run time, total runs."""
+    from backend.pulse.scheduler import pulse_scheduler
+    return pulse_scheduler.status()
+
+
+@app.post("/api/pulse/trigger")
+async def pulse_trigger(request: _PulseRequest):
+    """
+    Fire one run immediately, bypassing the scheduled interval. Returns the
+    persisted run dict. Rate-limited in memory to 1 call per minute per IP.
+
+    The query used is the NEXT one in the watchlist — same rotation as the
+    scheduler — so manual triggers still exercise the full watchlist over time.
+    """
+    from backend.pulse.scheduler import pulse_scheduler
+    from backend.pulse.watchlist import pick
+
+    client_ip = "unknown"
+    try:
+        if request.client is not None:
+            client_ip = request.client.host or "unknown"
+    except Exception:
+        pass
+
+    now_ts = _time_for_pulse.time()
+    last = _pulse_trigger_last_call_by_ip.get(client_ip, 0.0)
+    if now_ts - last < _PULSE_TRIGGER_MIN_INTERVAL_SEC:
+        retry_after = int(_PULSE_TRIGGER_MIN_INTERVAL_SEC - (now_ts - last))
+        return _PulseJSONResponse(
+            status_code=429,
+            content={
+                "error": "rate_limited",
+                "message": (
+                    f"Manual trigger limited to 1 per "
+                    f"{_PULSE_TRIGGER_MIN_INTERVAL_SEC}s. "
+                    f"Try again in {retry_after}s."
+                ),
+                "retry_after_seconds": retry_after,
+            },
+        )
+    _pulse_trigger_last_call_by_ip[client_ip] = now_ts
+
+    # Use the scheduler's rotation index so manual triggers still advance it.
+    query = pick(pulse_scheduler._index)
+    pulse_scheduler._index += 1
+
+    run = await pulse_scheduler.run_once(query, trigger_source="manual")
+    return run
 
 
 # ============================================================

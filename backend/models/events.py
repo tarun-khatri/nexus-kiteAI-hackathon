@@ -61,6 +61,11 @@ class EventType(str, Enum):
     AGENT_IDENTITY_RESOLVED = "agent_identity_resolved"
     MARKETPLACE_CAPABILITY_MISSING = "marketplace_capability_missing"
 
+    # Market Pulse events (autonomous trigger, no human in loop)
+    PULSE_RUN_STARTED = "pulse_run_started"
+    PULSE_RUN_COMPLETED = "pulse_run_completed"
+    PULSE_RUN_FAILED = "pulse_run_failed"
+
 
 class NexusEvent(BaseModel):
     """A real-time event in the Nexus economy, pushed to dashboard via WebSocket"""

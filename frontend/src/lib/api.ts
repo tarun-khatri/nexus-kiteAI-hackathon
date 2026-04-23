@@ -357,10 +357,27 @@ export async function getAgentReputation(agentId: string): Promise<{
 }
 
 // === Market Pulse (autonomous trigger) ===
+export interface PulsePayment {
+  from_agent: string;
+  to_agent: string;
+  amount: number;
+  purpose: string;
+  tx_hash: string;
+  status: string;
+}
+
+export type PulseQuerySource =
+  | "llm_generated"
+  | "capability_registry"
+  | "built_in_fallback"
+  | "manual"
+  | "unknown";
+
 export interface PulseRun {
   run_id: string;
   query: string;
   trigger_source: "scheduled" | "manual";
+  query_source?: PulseQuerySource;
   report_id: string | null;
   summary: string | null;
   status: "ok" | "partial" | "error";
@@ -368,11 +385,53 @@ export interface PulseRun {
   total_cost_usdc: number;
   total_time_ms: number;
   audit_tx_hash: string | null;
-  payment_tx_hashes: string[];
+  payments: PulsePayment[];
   mandate_id: string | null;
   error_message: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface PulseMandatePaymentLogEntry {
+  payment_id?: string;
+  from_agent?: string;
+  to_agent?: string;
+  amount?: number;
+  tx_hash?: string | null;
+  status?: string;
+  blocked_reason?: string | null;
+  timestamp?: string;
+}
+
+export interface PulseMandateDetail {
+  mandate_id: string;
+  context_hash?: string;
+  total_budget?: number;
+  cumulative_spent?: number;
+  budget_remaining?: number;
+  max_per_tx?: number;
+  signature?: string;
+  signer_address?: string;
+  status?: string;
+  expires_at?: string;
+  allowed_agents?: string[];
+  payment_log?: PulseMandatePaymentLogEntry[];
+}
+
+export interface PulseAuditTrailDetail {
+  trail_id: string;
+  mandate_id?: string;
+  traceability_hash?: string;
+  report_hash?: string;
+  on_chain_tx_hash?: string | null;
+  explorer_url?: string | null;
+  query?: string;
+}
+
+export interface PulseRunDetail extends PulseRun {
+  mandate_detail: PulseMandateDetail | null;
+  audit_trail_detail: PulseAuditTrailDetail | null;
+  explorer_base?: string;
 }
 
 export interface PulseStatus {
@@ -380,18 +439,22 @@ export interface PulseStatus {
   running: boolean;
   interval_seconds: number;
   initial_delay_seconds: number;
-  watchlist_size: number;
-  watchlist_next_index: number;
   run_count: number;
   last_run_at: string | null;
   next_run_at: string | null;
   seconds_since_last_run: number | null;
+  last_query_source: PulseQuerySource | null;
 }
 
 export async function getPulseRuns(
   limit: number = 50,
 ): Promise<{ runs: PulseRun[]; total: number; explorer_base: string }> {
   const res = await fetch(`${API_BASE}/api/pulse?limit=${limit}`);
+  return res.json();
+}
+
+export async function getPulseRun(runId: string): Promise<PulseRunDetail> {
+  const res = await fetch(`${API_BASE}/api/pulse/${encodeURIComponent(runId)}`);
   return res.json();
 }
 

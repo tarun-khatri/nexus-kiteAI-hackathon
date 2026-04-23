@@ -1,19 +1,27 @@
 "use client";
 
 /**
- * /pulse — Market Pulse public page.
+ * /pulse — Market Pulse public page (v2).
  *
- * Shows autonomous runs: every N minutes the backend wakes itself up, picks
- * a query from the watchlist, and drives it through the full orchestrator
- * (mandate → x402 payment → audit trail) with no human involvement. Every
- * row here has a clickable Kitescan tx — live on-chain proof.
+ * Shows autonomous runs: every 15 minutes the backend wakes itself up,
+ * generates a query from live market signals via LLM, and drives it through
+ * the full orchestrator (mandate → x402 payment → audit trail) with no human
+ * involvement. Every row here has a clickable Kitescan tx — live on-chain
+ * proof.
+ *
+ * v2 additions:
+ *   - Rows are click-to-expand. Expanded panel shows full mandate detail
+ *     (ECDSA signature, signer, budget, payment log), every individual x402
+ *     payment as a clickable tx, and the audit trail hash.
+ *   - Each row shows a query-source badge: 🧠 llm-generated, 📋 from registry
+ *     example queries, 📌 built-in fallback.
  *
  * Judges bookmark this URL. New runs arrive via WebSocket event
  * `pulse_run_completed` and the row list re-fetches on a 15s timer as a
  * fallback.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -24,14 +32,25 @@ import {
   RefreshCw,
   Clock,
   ExternalLink,
+  ChevronDown,
+  ChevronRight,
+  Brain,
+  BookOpen,
+  Pin,
+  CheckCircle2,
+  XCircle,
+  ShieldCheck,
 } from "lucide-react";
 
 import {
   getPulseRuns,
   getPulseStatus,
+  getPulseRun,
   triggerPulse,
   type PulseRun,
+  type PulseRunDetail,
   type PulseStatus,
+  type PulseQuerySource,
 } from "@/lib/api";
 import { HashLink } from "@/components/ui/HashLink";
 import { NexusLogo } from "@/components/ui/NexusLogo";
@@ -70,10 +89,60 @@ function countdown(targetIso: string | null): string {
 }
 
 function avgCost(runs: PulseRun[]): string {
-  const okRuns = runs.filter((r) => r.status === "ok");
-  if (okRuns.length === 0) return "—";
-  const total = okRuns.reduce((a, r) => a + (r.total_cost_usdc || 0), 0);
-  return `$${(total / okRuns.length).toFixed(4)}`;
+  const ok = runs.filter((r) => r.status === "ok");
+  if (ok.length === 0) return "—";
+  const total = ok.reduce((a, r) => a + (r.total_cost_usdc || 0), 0);
+  return `$${(total / ok.length).toFixed(4)}`;
+}
+
+function formatUtc(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toISOString().replace("T", " ").replace(/\..+Z$/, " UTC");
+  } catch {
+    return iso;
+  }
+}
+
+function querySourceMeta(source: PulseQuerySource | undefined | null) {
+  switch (source) {
+    case "llm_generated":
+      return {
+        icon: Brain,
+        label: "LLM-generated",
+        color: "#7C3AED",
+        bg: "#F5F3FF",
+      };
+    case "capability_registry":
+      return {
+        icon: BookOpen,
+        label: "From agent registry",
+        color: "#2563EB",
+        bg: "#EFF6FF",
+      };
+    case "built_in_fallback":
+      return {
+        icon: Pin,
+        label: "Built-in fallback",
+        color: "#6B7280",
+        bg: "#F3F4F6",
+      };
+    case "manual":
+      return {
+        icon: Play,
+        label: "Manual trigger",
+        color: "#D97706",
+        bg: "#FFFBEB",
+      };
+    default:
+      return {
+        icon: Activity,
+        label: "—",
+        color: "#9CA3AF",
+        bg: "#F3F4F6",
+      };
+  }
 }
 
 // ======================================================================
@@ -89,10 +158,18 @@ function PulseInner() {
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [tickTs, setTickTs] = useState<number>(() => Date.now());
 
+  // Drill-down state: one row expanded at a time, details cached after
+  // first fetch so collapse/re-expand is instant.
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [details, setDetails] = useState<Map<string, PulseRunDetail>>(
+    new Map(),
+  );
+  const [detailsLoading, setDetailsLoading] = useState<string | null>(null);
+  const [detailsError, setDetailsError] = useState<{ id: string; msg: string } | null>(null);
+
   const { events } = useWebSocketContext();
 
-  // --- Fetch runs + status every 15s and on mount ---
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const [runsRes, statusRes] = await Promise.all([
         getPulseRuns(50).catch(() => null),
@@ -106,21 +183,21 @@ function PulseInner() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refresh();
     const int = setInterval(refresh, 15000);
     return () => clearInterval(int);
-  }, []);
+  }, [refresh]);
 
-  // --- Countdown re-render every second (no data fetch) ---
+  // Countdown re-render every second (no data fetch)
   useEffect(() => {
     const int = setInterval(() => setTickTs(Date.now()), 1000);
     return () => clearInterval(int);
   }, []);
 
-  // --- Refresh when a pulse_run_completed event arrives over WS ---
+  // Refresh list when a pulse event arrives
   useEffect(() => {
     if (events.length === 0) return;
     const latest = events[0];
@@ -128,11 +205,39 @@ function PulseInner() {
       latest.event === "pulse_run_completed" ||
       latest.event === "pulse_run_failed"
     ) {
-      // Slight debounce — the DB row is written before the WS event fires
-      // so this is safe, but give it a beat for any eventual consistency.
       setTimeout(refresh, 500);
     }
-  }, [events]);
+  }, [events, refresh]);
+
+  const toggleExpand = async (runId: string) => {
+    if (expandedRunId === runId) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(runId);
+    setDetailsError(null);
+
+    if (details.has(runId)) return; // already cached
+
+    setDetailsLoading(runId);
+    try {
+      const d = await getPulseRun(runId);
+      // Backend returns 404 as JSON {error: "not_found", ...} — detect
+      const withError = d as unknown as { error?: string; message?: string };
+      if (withError.error) {
+        setDetailsError({
+          id: runId,
+          msg: withError.message || withError.error,
+        });
+      } else {
+        setDetails((prev) => new Map(prev).set(runId, d));
+      }
+    } catch (e: any) {
+      setDetailsError({ id: runId, msg: e?.message || "Failed to load details" });
+    } finally {
+      setDetailsLoading(null);
+    }
+  };
 
   const handleTrigger = async () => {
     if (triggering) return;
@@ -141,9 +246,10 @@ function PulseInner() {
     try {
       const res = await triggerPulse();
       if ("error" in res) {
-        setTriggerError(res.message || "Trigger rate-limited. Try again in a moment.");
+        setTriggerError(
+          res.message || "Trigger rate-limited. Try again in a moment.",
+        );
       } else {
-        // run persisted — it'll show up via refresh() called below
         await refresh();
       }
     } catch (e: any) {
@@ -155,8 +261,7 @@ function PulseInner() {
 
   const statusStrip = useMemo(() => {
     if (!status) return null;
-    // tickTs in the dep ensures the countdown re-renders each second
-    void tickTs;
+    void tickTs; // trigger re-render each second for countdown
     return (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <StatBox label="Total runs" value={total.toLocaleString()} />
@@ -215,12 +320,18 @@ function PulseInner() {
             </h1>
             <p className="text-[var(--color-text-secondary)] max-w-2xl leading-relaxed">
               The NEXUS economy runs itself. Every{" "}
-              <strong>{status ? `${Math.round(status.interval_seconds / 60)} minutes` : "N minutes"}</strong>{" "}
-              the backend wakes up, picks a query from its watchlist, signs a
-              mandate, hires agents through the orchestrator, settles payments
-              via x402 on Kite, and records an audit trail on-chain — with
-              nobody at the keyboard. Every row below is a real autonomous run
-              with a real on-chain transaction hash.
+              <strong>
+                {status
+                  ? `${Math.round(status.interval_seconds / 60)} minutes`
+                  : "N minutes"}
+              </strong>{" "}
+              the backend wakes up, asks an{" "}
+              <strong>LLM to generate a query</strong> based on live market
+              signals (BTC/ETH/SOL 24h change, trending coins, Fear & Greed),
+              signs a mandate, hires agents through the orchestrator, settles
+              payments via x402 on Kite, and records an audit trail on-chain —
+              with nobody at the keyboard. Click any row below to see every
+              step with clickable Kitescan transactions.
             </p>
           </div>
 
@@ -248,7 +359,7 @@ function PulseInner() {
               )}
             </button>
             <span className="text-[11px] text-[var(--color-text-muted)]">
-              Fires one run immediately · rate-limited to 1 / minute
+              Fires one run with a freshly LLM-generated query · rate-limited to 1 / minute
             </span>
           </div>
 
@@ -259,7 +370,7 @@ function PulseInner() {
             </div>
           )}
 
-          {/* Runs table */}
+          {/* Runs list */}
           <div className="card p-0 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-border)]">
               <div className="flex items-center gap-2">
@@ -301,7 +412,19 @@ function PulseInner() {
             ) : (
               <ul className="divide-y divide-[var(--color-border)]">
                 {runs.map((r) => (
-                  <PulseRow key={r.run_id} run={r} />
+                  <PulseRowExpandable
+                    key={r.run_id}
+                    run={r}
+                    expanded={expandedRunId === r.run_id}
+                    detail={details.get(r.run_id) ?? null}
+                    detailLoading={detailsLoading === r.run_id}
+                    detailError={
+                      detailsError && detailsError.id === r.run_id
+                        ? detailsError.msg
+                        : null
+                    }
+                    onToggle={() => toggleExpand(r.run_id)}
+                  />
                 ))}
               </ul>
             )}
@@ -344,30 +467,64 @@ function StatBox({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PulseRow({ run }: { run: PulseRun }) {
-  const statusBadge =
-    run.status === "ok" ? (
-      <span className="badge badge-green text-[10px]">ok</span>
-    ) : run.status === "partial" ? (
-      <span className="badge badge-amber text-[10px]">partial</span>
-    ) : (
-      <span className="badge badge-red text-[10px]">error</span>
-    );
+function StatusBadge({ status }: { status: string }) {
+  if (status === "ok")
+    return <span className="badge badge-green text-[10px]">ok</span>;
+  if (status === "partial")
+    return <span className="badge badge-amber text-[10px]">partial</span>;
+  return <span className="badge badge-red text-[10px]">error</span>;
+}
 
-  const triggerBadge =
-    run.trigger_source === "manual" ? (
-      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-bg-alt)] text-[var(--color-text-muted)]">
-        manual
-      </span>
-    ) : null;
-
+function SourceBadge({ source }: { source?: PulseQuerySource | null }) {
+  const meta = querySourceMeta(source);
+  const Icon = meta.icon;
   return (
-    <li className="px-5 py-4 hover:bg-[var(--color-bg-alt)]/40 transition-colors">
-      <div className="flex items-start justify-between gap-4 mb-2">
+    <span
+      className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded"
+      style={{ backgroundColor: meta.bg, color: meta.color }}
+      title={meta.label}
+    >
+      <Icon size={10} />
+      {meta.label}
+    </span>
+  );
+}
+
+function PulseRowExpandable({
+  run,
+  expanded,
+  detail,
+  detailLoading,
+  detailError,
+  onToggle,
+}: {
+  run: PulseRun;
+  expanded: boolean;
+  detail: PulseRunDetail | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  onToggle: () => void;
+}) {
+  return (
+    <li className="hover:bg-[var(--color-bg-alt)]/40 transition-colors">
+      {/* Row summary (click to toggle) */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left px-5 py-4 cursor-pointer flex items-start gap-3"
+      >
+        <span className="pt-0.5 shrink-0 text-[var(--color-text-muted)]">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            {statusBadge}
-            {triggerBadge}
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <StatusBadge status={run.status} />
+            <SourceBadge source={run.query_source} />
+            {run.trigger_source === "manual" && (
+              <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-bg-alt)] text-[var(--color-text-muted)]">
+                manual
+              </span>
+            )}
             <span className="text-[11px] text-[var(--color-text-muted)]">
               {timeAgo(run.started_at)}
             </span>
@@ -393,16 +550,329 @@ function PulseRow({ run }: { run: PulseRun }) {
           </div>
           <div>{(run.total_time_ms / 1000).toFixed(1)}s</div>
         </div>
-      </div>
-      {run.audit_tx_hash && (
-        <div className="flex items-center gap-2 pt-2">
-          <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] shrink-0">
-            audit tx
-          </span>
-          <HashLink value={run.audit_tx_hash} kind="tx" />
+      </button>
+
+      {/* Expanded drill-down */}
+      {expanded && (
+        <div className="px-5 pb-5 pt-1 border-t border-[var(--color-border)] bg-[var(--color-bg-alt)]/30 animate-fade-in">
+          {detailLoading ? (
+            <div className="py-6 text-center text-xs text-[var(--color-text-muted)]">
+              <Loader2 size={16} className="animate-spin inline-block mr-1.5" />
+              Loading full details…
+            </div>
+          ) : detailError ? (
+            <div className="py-4 text-xs text-[var(--color-red)] inline-flex items-center gap-2">
+              <AlertCircle size={14} />
+              {detailError}
+            </div>
+          ) : (
+            <DrillDown run={run} detail={detail} />
+          )}
         </div>
       )}
     </li>
+  );
+}
+
+function DrillDown({
+  run,
+  detail,
+}: {
+  run: PulseRun;
+  detail: PulseRunDetail | null;
+}) {
+  // Prefer the live-joined payment_log (has circuit-breaker decisions).
+  // Fall back to the persisted run.payments if mandate was purged.
+  const paymentLog = detail?.mandate_detail?.payment_log ?? null;
+  const paymentsForDisplay = useMemo(() => {
+    if (paymentLog && paymentLog.length > 0) {
+      return paymentLog.map((p) => ({
+        from_agent: p.from_agent || "",
+        to_agent: p.to_agent || "",
+        amount: typeof p.amount === "number" ? p.amount : 0,
+        purpose: "", // mandate log doesn't carry purpose
+        tx_hash: p.tx_hash || "",
+        status: p.status || "confirmed",
+        blocked_reason: p.blocked_reason ?? null,
+        timestamp: p.timestamp,
+      }));
+    }
+    return run.payments.map((p) => ({
+      ...p,
+      blocked_reason: null as string | null,
+      timestamp: undefined as string | undefined,
+    }));
+  }, [paymentLog, run.payments]);
+
+  const mandate = detail?.mandate_detail;
+  const audit = detail?.audit_trail_detail;
+
+  return (
+    <div className="space-y-5 pt-3">
+      {/* Section A: IDs & Timing */}
+      <DrillSection title="IDs & Timing">
+        <DrillField label="Run ID" value={run.run_id} mono />
+        {run.report_id && (
+          <DrillField label="Report ID" value={run.report_id} mono />
+        )}
+        <DrillField label="Started" value={formatUtc(run.started_at)} />
+        <DrillField label="Completed" value={formatUtc(run.completed_at)} />
+        <DrillField
+          label="Duration"
+          value={`${(run.total_time_ms / 1000).toFixed(2)}s`}
+        />
+        <DrillField
+          label="Total cost"
+          value={`$${run.total_cost_usdc.toFixed(6)} USDC`}
+        />
+      </DrillSection>
+
+      {/* Section B: Mandate (Verified Intent) */}
+      <DrillSection title="Mandate (Verified Intent)">
+        {run.mandate_id ? (
+          <>
+            <DrillField label="Mandate ID" value={run.mandate_id} mono />
+            {mandate ? (
+              <>
+                {mandate.context_hash && (
+                  <DrillField
+                    label="Context hash"
+                    value={mandate.context_hash}
+                    mono
+                  />
+                )}
+                {typeof mandate.total_budget === "number" && (
+                  <DrillField
+                    label="Budget"
+                    value={`$${mandate.total_budget.toFixed(6)} — spent $${(mandate.cumulative_spent ?? 0).toFixed(6)}, remaining $${(mandate.budget_remaining ?? 0).toFixed(6)}`}
+                  />
+                )}
+                {typeof mandate.max_per_tx === "number" && (
+                  <DrillField
+                    label="Max per tx"
+                    value={`$${mandate.max_per_tx.toFixed(6)}`}
+                  />
+                )}
+                {mandate.expires_at && (
+                  <DrillField label="Expires" value={formatUtc(mandate.expires_at)} />
+                )}
+                {mandate.signer_address && (
+                  <DrillFieldHashLink
+                    label="Signer"
+                    value={mandate.signer_address}
+                    kind="address"
+                  />
+                )}
+                {mandate.signature && mandate.signature !== "unsigned" && (
+                  <DrillFieldHashLink
+                    label="ECDSA signature"
+                    value={mandate.signature}
+                    kind="none"
+                  />
+                )}
+                {mandate.signature === "unsigned" && (
+                  <div className="text-[11px] text-[var(--color-amber)] pt-1">
+                    <ShieldCheck size={11} className="inline mr-1" />
+                    Unsigned (no deployer key in this env) — chain writes still fire
+                    but signature validation is skipped.
+                  </div>
+                )}
+                {mandate.status && (
+                  <DrillField label="Mandate status" value={mandate.status} />
+                )}
+                {mandate.allowed_agents && mandate.allowed_agents.length > 0 && (
+                  <DrillField
+                    label="Allowed agents"
+                    value={mandate.allowed_agents.join(", ")}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="text-[11px] text-[var(--color-text-muted)] italic">
+                Mandate no longer in memory (older than retention window).
+                ID persisted above; detailed signature/payment-log unavailable
+                for this run.
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-[11px] text-[var(--color-text-muted)] italic">
+            No mandate (chain offline during this run).
+          </div>
+        )}
+      </DrillSection>
+
+      {/* Section C: Individual x402 payments */}
+      <DrillSection title={`x402 payments (${paymentsForDisplay.length})`}>
+        {paymentsForDisplay.length === 0 ? (
+          <div className="text-[11px] text-[var(--color-text-muted)] italic">
+            No settled payments on this run.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
+                  <th className="py-1.5 pr-3 font-semibold">From → To</th>
+                  <th className="py-1.5 pr-3 font-semibold">Purpose</th>
+                  <th className="py-1.5 pr-3 font-semibold text-right">
+                    Amount
+                  </th>
+                  <th className="py-1.5 pr-3 font-semibold">Status</th>
+                  <th className="py-1.5 font-semibold">Tx hash</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paymentsForDisplay.map((p, i) => (
+                  <tr
+                    key={`${p.tx_hash}-${i}`}
+                    className="border-b border-[var(--color-border)] last:border-0"
+                  >
+                    <td className="py-2 pr-3 align-top">
+                      <div className="font-medium text-[var(--color-text)]">
+                        {p.from_agent || "—"}
+                      </div>
+                      <div className="text-[var(--color-text-muted)]">
+                        → {p.to_agent || "—"}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 align-top text-[var(--color-text-secondary)]">
+                      {p.purpose || "—"}
+                    </td>
+                    <td className="py-2 pr-3 align-top text-right font-mono tabular-nums text-[var(--color-accent)] font-semibold">
+                      ${p.amount.toFixed(6)}
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      {p.status === "confirmed" || p.status === "success" ? (
+                        <CheckCircle2
+                          size={12}
+                          className="inline text-[var(--color-green)] mr-1"
+                        />
+                      ) : (
+                        <XCircle
+                          size={12}
+                          className="inline text-[var(--color-red)] mr-1"
+                        />
+                      )}
+                      <span className="text-[var(--color-text-muted)]">
+                        {p.status}
+                      </span>
+                      {p.blocked_reason && (
+                        <div className="text-[var(--color-red)] mt-0.5">
+                          {p.blocked_reason}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2 align-top max-w-[360px]">
+                      {p.tx_hash ? (
+                        <HashLink value={p.tx_hash} kind="tx" />
+                      ) : (
+                        <span className="text-[var(--color-text-muted)]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DrillSection>
+
+      {/* Section D: Audit Trail */}
+      <DrillSection title="Audit Trail">
+        {run.audit_tx_hash ? (
+          <>
+            <DrillFieldHashLink
+              label="On-chain tx"
+              value={run.audit_tx_hash}
+              kind="tx"
+            />
+            {audit?.trail_id && (
+              <DrillField label="Trail ID" value={audit.trail_id} mono />
+            )}
+            {audit?.traceability_hash && (
+              <DrillFieldHashLink
+                label="Traceability hash"
+                value={audit.traceability_hash}
+                kind="none"
+              />
+            )}
+            {audit?.report_hash && (
+              <DrillFieldHashLink
+                label="Report hash"
+                value={audit.report_hash}
+                kind="none"
+              />
+            )}
+          </>
+        ) : (
+          <div className="text-[11px] text-[var(--color-text-muted)] italic">
+            No on-chain audit trail (chain offline during this run or run failed).
+          </div>
+        )}
+      </DrillSection>
+    </div>
+  );
+}
+
+function DrillSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h3 className="text-[10px] uppercase tracking-wider font-bold text-[var(--color-text-muted)] mb-2">
+        {title}
+      </h3>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function DrillField({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-start gap-3 text-[11px]">
+      <span className="text-[var(--color-text-muted)] w-28 shrink-0 uppercase tracking-wider text-[10px] pt-0.5">
+        {label}
+      </span>
+      <span
+        className={`min-w-0 flex-1 break-all ${mono ? "font-mono" : ""} text-[var(--color-text)]`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DrillFieldHashLink({
+  label,
+  value,
+  kind,
+}: {
+  label: string;
+  value: string;
+  kind: "tx" | "address" | "passport" | "none";
+}) {
+  return (
+    <div className="flex items-start gap-3 text-[11px]">
+      <span className="text-[var(--color-text-muted)] w-28 shrink-0 uppercase tracking-wider text-[10px] pt-1">
+        {label}
+      </span>
+      <div className="min-w-0 flex-1">
+        <HashLink value={value} kind={kind} />
+      </div>
+    </div>
   );
 }
 

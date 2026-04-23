@@ -894,11 +894,69 @@ async def pulse_trigger(request: _PulseRequest):
         )
     _pulse_trigger_last_call_by_ip[client_ip] = now_ts
 
-    # Use the scheduler's rotation index so manual triggers still advance it.
-    query = pick(pulse_scheduler._index)
-    pulse_scheduler._index += 1
+    # v2: no rotation index — manual triggers generate a fresh query the
+    # same way scheduled runs do (LLM → registry → built-in). The judge
+    # clicking "Trigger run now" sees a novel query, not a cycled one.
+    from backend.pulse.query_generator import generate_query
+    query, query_source = await generate_query()
 
-    run = await pulse_scheduler.run_once(query, trigger_source="manual")
+    run = await pulse_scheduler.run_once(
+        query, trigger_source="manual", query_source=query_source,
+    )
+    return run
+
+
+# Route ORDER matters here. FastAPI matches paths in declaration order,
+# so the path-variable form `/api/pulse/{run_id}` MUST come after the
+# specific routes `/api/pulse/status` and `/api/pulse/trigger` — otherwise
+# "status" or "trigger" would be captured as a run_id.
+@app.get("/api/pulse/{run_id}")
+async def pulse_run_detail(run_id: str):
+    """
+    Return a single pulse run with full drill-down detail:
+      - the persisted row (IDs, summary, per-payment breakdown)
+      - live mandate details (ECDSA signature, signer, budget, payment log
+        with circuit-breaker decisions) if the mandate is still in memory
+      - audit trail entry (traceability hash, report hash, on-chain tx)
+        if still in memory
+
+    Mandate + audit lookups use the in-memory managers; older runs whose
+    mandates have been purged will return `mandate_detail: null` — that's
+    transparent, not an error.
+    """
+    from backend.pulse.store import load_pulse_run
+    run = await load_pulse_run(run_id)
+    if not run:
+        return _PulseJSONResponse(
+            status_code=404,
+            content={"error": "not_found", "message": f"Pulse run {run_id} not found"},
+        )
+
+    # --- Join: live mandate detail ---
+    mandate_detail = None
+    if run.get("mandate_id"):
+        try:
+            m = mandate_manager.get_mandate(run["mandate_id"])
+            if m is not None:
+                mandate_detail = m.model_dump(mode="json")
+        except Exception as e:
+            print(f"[Pulse] Mandate lookup failed for {run['mandate_id']}: {e}")
+    run["mandate_detail"] = mandate_detail
+
+    # --- Join: audit trail detail ---
+    audit_detail = None
+    audit_tx = run.get("audit_tx_hash")
+    if audit_tx:
+        try:
+            for t in audit_trail_builder.trails:
+                if t.on_chain_tx_hash == audit_tx:
+                    audit_detail = t.model_dump(mode="json")
+                    break
+        except Exception as e:
+            print(f"[Pulse] Audit lookup failed for tx {audit_tx[:12]}...: {e}")
+    run["audit_trail_detail"] = audit_detail
+
+    run["explorer_base"] = "https://testnet.kitescan.ai"
     return run
 
 

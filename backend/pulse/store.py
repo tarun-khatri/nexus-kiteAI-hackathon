@@ -68,15 +68,51 @@ async def save_pulse_run(run: dict) -> None:
 # ============================================================
 
 def _row_to_dict(row) -> dict:
-    """Convert a sqlite Row tuple to the API-shaped dict."""
-    tx_list: list = []
-    if row[10]:
+    """
+    Convert a sqlite Row tuple to the API-shaped dict.
+
+    v2 stores payments as a rich list of dicts:
+      [{"from_agent":..., "to_agent":..., "amount":..., "purpose":...,
+        "tx_hash":..., "status":...}, ...]
+
+    v1 rows (the 2 already in prod) stored a flat list[str] of tx hashes.
+    We transparently wrap v1 entries as minimal dicts so the frontend can
+    treat both uniformly — old rows just show blank from/to/purpose.
+    """
+    raw_payments = row[10]
+    parsed: list = []
+    if raw_payments:
         try:
-            tx_list = json.loads(row[10])
-            if not isinstance(tx_list, list):
-                tx_list = []
+            parsed = json.loads(raw_payments)
+            if not isinstance(parsed, list):
+                parsed = []
         except Exception:
-            tx_list = []
+            parsed = []
+
+    payments: list[dict] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            # v2 rich format — normalize keys we expect.
+            payments.append({
+                "from_agent": item.get("from_agent") or item.get("from") or "",
+                "to_agent": item.get("to_agent") or item.get("to") or "",
+                "amount": float(item.get("amount") or 0.0),
+                "purpose": item.get("purpose") or "",
+                "tx_hash": item.get("tx_hash") or "",
+                "status": item.get("status") or "confirmed",
+            })
+        elif isinstance(item, str):
+            # v1 legacy format — bare tx hash string. Wrap it.
+            payments.append({
+                "from_agent": "",
+                "to_agent": "",
+                "amount": 0.0,
+                "purpose": "",
+                "tx_hash": item,
+                "status": "confirmed",
+            })
+        # anything else is ignored silently
+
     return {
         "run_id": row[0],
         "query": row[1],
@@ -88,7 +124,7 @@ def _row_to_dict(row) -> dict:
         "total_cost_usdc": row[7] or 0.0,
         "total_time_ms": row[8] or 0,
         "audit_tx_hash": row[9],
-        "payment_tx_hashes": tx_list,
+        "payments": payments,
         "mandate_id": row[11],
         "error_message": row[12],
         "started_at": row[13],

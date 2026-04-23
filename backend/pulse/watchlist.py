@@ -1,41 +1,29 @@
 """
-Market Pulse — watchlist of autonomous queries.
+Market Pulse — built-in fallback query pool.
 
-The scheduler round-robins through this list. Queries are hardcoded by design:
-the judging demo is deterministic (same queries, same route paths, same
-on-chain proof) and LLM-picked query selection would introduce non-reproducible
-behavior and extra compounding cost.
+**Not a watchlist anymore.** As of v2, queries are LLM-generated from live
+market signals (see backend/pulse/query_generator.py). This file only
+exists as the last-resort fallback, used ONLY when:
+  1. LLM generation fails (timeout, provider down), AND
+  2. capability_registry.example_queries pool is empty (fresh install,
+     no marketplace agents registered yet).
 
-Each entry is a real crypto-intelligence query that routes through 2-5 agents
-via the capability registry and produces a real audit trail on Kite testnet.
+In production this path is practically unreachable — the marketplace always
+has at least the 3 built-in agents whose example_queries populate the pool.
 
-To add or change a query, edit this file — the scheduler picks up the new list
-on next backend restart. No config change needed.
+File kept at this path for backward compatibility with imports.
 """
 
 from __future__ import annotations
 
-WATCHLIST: list[str] = [
+
+BUILT_IN_FALLBACK: list[str] = [
     "BTC sentiment and price trend last 1h",
-    "Top 3 DeFi protocols by TVL change today",
     "ETH whale activity right now",
-    "Is SOL bullish or bearish this hour",
-    "Latest Solana memecoin launches",
-    "Security check on 0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    "Top DeFi protocols by TVL change today",
 ]
 """
-Rotating list of 6 queries covering: price, sentiment, DeFi, whale activity,
-new-token discovery, and security. Each one exercises a different slice of the
-capability registry so judges see domain breadth across a handful of runs.
+Minimal set covering: sentiment/price, whale activity, DeFi health. Just
+enough to keep the scheduler fully functional on a completely fresh
+install where no agents have registered yet.
 """
-
-
-def pick(index: int) -> str:
-    """Return the query at `index` (wraps around)."""
-    if not WATCHLIST:
-        raise RuntimeError("Watchlist is empty — add at least one query.")
-    return WATCHLIST[index % len(WATCHLIST)]
-
-
-def size() -> int:
-    return len(WATCHLIST)

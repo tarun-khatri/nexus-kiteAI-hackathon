@@ -98,7 +98,18 @@ function avgCost(runs: PulseRun[]): string {
 function formatUtc(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
-    const d = new Date(iso);
+    // Some backend datetimes (e.g. mandate.expires_at from
+    // datetime.utcnow()) serialize without a timezone suffix. The browser
+    // treats a naive ISO string as LOCAL time, which produces the wrong
+    // "UTC" display (off by the user's TZ offset). Detect naive strings
+    // and append "Z" so they parse as UTC.
+    const hasTz =
+      iso.endsWith("Z") ||
+      /[+-]\d{2}:?\d{2}$/.test(iso) ||
+      /[+-]\d{4}$/.test(iso);
+    const toParse = hasTz ? iso : iso + "Z";
+    const d = new Date(toParse);
+    if (isNaN(d.getTime())) return iso;
     return d.toISOString().replace("T", " ").replace(/\..+Z$/, " UTC");
   } catch {
     return iso;
@@ -581,27 +592,76 @@ function DrillDown({
   run: PulseRun;
   detail: PulseRunDetail | null;
 }) {
-  // Prefer the live-joined payment_log (has circuit-breaker decisions).
-  // Fall back to the persisted run.payments if mandate was purged.
+  // run.payments is the PRIMARY source — it has from_agent, to_agent,
+  // purpose, amount, tx_hash, status (all fields needed for a complete
+  // payment row). We enrich each entry with extra metadata from the
+  // mandate's payment_log (stricter status like "failed_downstream",
+  // error_message, timestamp) by matching on tx_hash.
+  //
+  // If run.payments is empty (older v1 runs that never stored rich
+  // payment detail, or failed runs), fall through to the mandate log
+  // as a best-effort display — from_agent column will show "—" since
+  // MandatePaymentRecord has no from_agent field.
   const paymentLog = detail?.mandate_detail?.payment_log ?? null;
   const paymentsForDisplay = useMemo(() => {
+    // Build a tx_hash → enrichment map from the mandate payment_log
+    const enrichment = new Map<
+      string,
+      {
+        status: string | null;
+        error_message: string | null;
+        purpose: string | null;
+        timestamp: string | undefined;
+      }
+    >();
+    if (paymentLog) {
+      for (const p of paymentLog) {
+        if (p.tx_hash) {
+          enrichment.set(p.tx_hash, {
+            status: p.status ?? null,
+            error_message: p.error_message ?? null,
+            purpose: p.purpose ?? null,
+            timestamp: p.timestamp,
+          });
+        }
+      }
+    }
+
+    // Primary: run.payments (rich v2 data)
+    if (run.payments.length > 0) {
+      return run.payments.map((p) => {
+        const extra = enrichment.get(p.tx_hash);
+        return {
+          from_agent: p.from_agent,
+          to_agent: p.to_agent,
+          amount: p.amount,
+          // Prefer run.payments purpose; fall back to mandate log's purpose
+          purpose: p.purpose || extra?.purpose || "",
+          tx_hash: p.tx_hash,
+          // Mandate log's status is more precise (distinguishes
+          // failed_downstream from blocked_unreachable); prefer it.
+          status: extra?.status || p.status,
+          error_message: extra?.error_message ?? null,
+          timestamp: extra?.timestamp,
+        };
+      });
+    }
+
+    // Fallback: mandate log only (from_agent unknown)
     if (paymentLog && paymentLog.length > 0) {
       return paymentLog.map((p) => ({
-        from_agent: p.from_agent || "",
+        from_agent: "",
         to_agent: p.to_agent || "",
         amount: typeof p.amount === "number" ? p.amount : 0,
-        purpose: "", // mandate log doesn't carry purpose
+        purpose: p.purpose || "",
         tx_hash: p.tx_hash || "",
         status: p.status || "confirmed",
-        blocked_reason: p.blocked_reason ?? null,
+        error_message: p.error_message ?? null,
         timestamp: p.timestamp,
       }));
     }
-    return run.payments.map((p) => ({
-      ...p,
-      blocked_reason: null as string | null,
-      timestamp: undefined as string | undefined,
-    }));
+
+    return [];
   }, [paymentLog, run.payments]);
 
   const mandate = detail?.mandate_detail;
@@ -757,9 +817,9 @@ function DrillDown({
                       <span className="text-[var(--color-text-muted)]">
                         {p.status}
                       </span>
-                      {p.blocked_reason && (
+                      {p.error_message && (
                         <div className="text-[var(--color-red)] mt-0.5">
-                          {p.blocked_reason}
+                          {p.error_message}
                         </div>
                       )}
                     </td>

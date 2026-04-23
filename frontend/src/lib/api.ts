@@ -392,14 +392,17 @@ export interface PulseRun {
   completed_at: string | null;
 }
 
+// Matches backend/models/mandate.py MandatePaymentRecord. Note there is no
+// `from_agent` — every payment comes from the mandate's signer (ReportAgent
+// in NEXUS) so it's implicit.
 export interface PulseMandatePaymentLogEntry {
-  payment_id?: string;
-  from_agent?: string;
   to_agent?: string;
   amount?: number;
+  purpose?: string;
   tx_hash?: string | null;
   status?: string;
-  blocked_reason?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
   timestamp?: string;
 }
 

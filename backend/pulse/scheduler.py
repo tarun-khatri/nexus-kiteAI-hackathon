@@ -252,6 +252,19 @@ class PulseScheduler:
 
         await save_pulse_run(run_dict)
 
+        # The audit-trail on-chain write is fired as a background task by
+        # ReportAgent (takes 10-30s on Kite). At this point the trail has a
+        # trail_id but on_chain_tx_hash is still None. Start our own
+        # background poller that updates the persisted row once the chain
+        # write lands. Non-blocking — the row is ALREADY persisted above
+        # so /pulse responds immediately; the row just gets patched with
+        # the audit_tx_hash when it arrives.
+        trail_id = audit_trail.get("trail_id")
+        if trail_id and not audit_tx_hash:
+            asyncio.create_task(
+                self._finalize_audit_tx(run_id, trail_id, run_dict)
+            )
+
         # Pretty log for ops visibility
         tx_hint = audit_tx_hash[:16] + "…" if audit_tx_hash else "(no chain tx)"
         print(
@@ -286,6 +299,80 @@ class PulseScheduler:
         self._last_run_at = completed_at
         self._last_query_source = query_source
         return run_dict
+
+    # ---------------------------------------------------------- audit finalize
+
+    async def _finalize_audit_tx(
+        self,
+        run_id: str,
+        trail_id: str,
+        run_dict: dict,
+        *,
+        poll_interval: float = 3.0,
+        timeout: float = 45.0,
+    ) -> None:
+        """
+        Background task: poll audit_trail_builder for the on_chain_tx_hash
+        to land, then update the persisted pulse_run row AND broadcast a
+        follow-up event so the /pulse page picks up the change.
+
+        Why this exists: ReportAgent fires `audit_trail_builder.record_on_chain`
+        as its own background task (Kite chain write is 10-30s). By the time
+        report_agent.handle_request() returns, trail_id is set but
+        on_chain_tx_hash is still None. We persist the run immediately (so
+        /pulse updates quickly) and patch the row asynchronously once the
+        chain write lands.
+
+        Idempotent — save_pulse_run uses INSERT OR REPLACE on run_id.
+        """
+        import backend.main as main_module
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        tx_hash: Optional[str] = None
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                for t in main_module.audit_trail_builder.trails:
+                    if t.trail_id == trail_id and t.on_chain_tx_hash:
+                        tx_hash = t.on_chain_tx_hash
+                        break
+            except Exception as e:
+                print(f"[Pulse] Audit poll for {run_id} errored: {e}")
+
+            if tx_hash:
+                break
+            await asyncio.sleep(poll_interval)
+
+        if not tx_hash:
+            # Not catastrophic — the chain tx may still land after we give
+            # up. Row stays with audit_tx_hash=null; user sees the honest
+            # "chain offline during this run or run failed" message.
+            print(
+                f"[Pulse] Audit tx for run {run_id} "
+                f"(trail {trail_id[:12]}…) didn't land in {timeout:.0f}s"
+            )
+            return
+
+        # Patch the row and re-broadcast so the UI picks up the change.
+        run_dict["audit_tx_hash"] = tx_hash
+        try:
+            await save_pulse_run(run_dict)
+            print(
+                f"[Pulse] Audit tx finalized for run {run_id}: "
+                f"{tx_hash[:16]}…"
+            )
+            await ws_manager.broadcast(NexusEvent(
+                event_type=EventType.PULSE_RUN_COMPLETED,
+                agent_id="MarketPulse",
+                data={
+                    "run_id": run_id,
+                    "audit_tx_hash": tx_hash,
+                    "finalized": True,
+                },
+                message=f"Market Pulse: audit trail finalized for {run_id}",
+            ))
+        except Exception as e:
+            print(f"[Pulse] Failed to patch audit tx for {run_id}: {e}")
 
 
 # Module-level singleton used by main.py lifespan + API endpoints.

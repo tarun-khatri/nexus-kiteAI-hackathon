@@ -863,11 +863,11 @@ async def pulse_trigger(request: _PulseRequest):
     Fire one run immediately, bypassing the scheduled interval. Returns the
     persisted run dict. Rate-limited in memory to 1 call per minute per IP.
 
-    The query used is the NEXT one in the watchlist — same rotation as the
-    scheduler — so manual triggers still exercise the full watchlist over time.
+    v2: each trigger generates a fresh LLM-based query (same path the
+    scheduled loop uses). No rotation — judges clicking the button see
+    a novel query every time.
     """
     from backend.pulse.scheduler import pulse_scheduler
-    from backend.pulse.watchlist import pick
 
     client_ip = "unknown"
     try:

@@ -152,6 +152,9 @@ async def test_run_once_persists_row_with_rich_payments(tmp_db, fresh_scheduler)
     assert payment["tx_hash"] == "0xaa" + "11" * 31
     assert payment["status"] == "confirmed"
 
+    # v2: query_source round-trips through DB
+    assert row["query_source"] == "llm_generated"
+
 
 # ============================================================
 # 3. Broadcast events include query_source

@@ -33,15 +33,17 @@ async def save_pulse_run(run: dict) -> None:
             try:
                 await db.execute(
                     """INSERT OR REPLACE INTO pulse_runs (
-                        run_id, query, trigger_source, report_id, summary, status,
+                        run_id, query, trigger_source, query_source,
+                        report_id, summary, status,
                         agents_involved, total_cost_usdc, total_time_ms,
                         audit_tx_hash, payment_tx_hashes_json, mandate_id,
                         error_message, started_at, completed_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         run.get("run_id", ""),
                         run.get("query", ""),
                         run.get("trigger_source", "scheduled"),
+                        run.get("query_source"),
                         run.get("report_id"),
                         run.get("summary"),
                         run.get("status", "ok"),
@@ -78,8 +80,26 @@ def _row_to_dict(row) -> dict:
     v1 rows (the 2 already in prod) stored a flat list[str] of tx hashes.
     We transparently wrap v1 entries as minimal dicts so the frontend can
     treat both uniformly — old rows just show blank from/to/purpose.
+
+    Column order (must match the SELECT below):
+      0  run_id
+      1  query
+      2  trigger_source
+      3  query_source
+      4  report_id
+      5  summary
+      6  status
+      7  agents_involved
+      8  total_cost_usdc
+      9  total_time_ms
+      10 audit_tx_hash
+      11 payment_tx_hashes_json
+      12 mandate_id
+      13 error_message
+      14 started_at
+      15 completed_at
     """
-    raw_payments = row[10]
+    raw_payments = row[11]
     parsed: list = []
     if raw_payments:
         try:
@@ -117,18 +137,19 @@ def _row_to_dict(row) -> dict:
         "run_id": row[0],
         "query": row[1],
         "trigger_source": row[2],
-        "report_id": row[3],
-        "summary": row[4],
-        "status": row[5],
-        "agents_involved": row[6] or 0,
-        "total_cost_usdc": row[7] or 0.0,
-        "total_time_ms": row[8] or 0,
-        "audit_tx_hash": row[9],
+        "query_source": row[3],
+        "report_id": row[4],
+        "summary": row[5],
+        "status": row[6],
+        "agents_involved": row[7] or 0,
+        "total_cost_usdc": row[8] or 0.0,
+        "total_time_ms": row[9] or 0,
+        "audit_tx_hash": row[10],
         "payments": payments,
-        "mandate_id": row[11],
-        "error_message": row[12],
-        "started_at": row[13],
-        "completed_at": row[14],
+        "mandate_id": row[12],
+        "error_message": row[13],
+        "started_at": row[14],
+        "completed_at": row[15],
     }
 
 
@@ -138,7 +159,8 @@ async def load_pulse_runs(limit: int = 50) -> list[dict]:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                """SELECT run_id, query, trigger_source, report_id, summary, status,
+                """SELECT run_id, query, trigger_source, query_source,
+                          report_id, summary, status,
                           agents_involved, total_cost_usdc, total_time_ms,
                           audit_tx_hash, payment_tx_hashes_json, mandate_id,
                           error_message, started_at, completed_at
@@ -158,7 +180,8 @@ async def load_pulse_run(run_id: str) -> Optional[dict]:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                """SELECT run_id, query, trigger_source, report_id, summary, status,
+                """SELECT run_id, query, trigger_source, query_source,
+                          report_id, summary, status,
                           agents_involved, total_cost_usdc, total_time_ms,
                           audit_tx_hash, payment_tx_hashes_json, mandate_id,
                           error_message, started_at, completed_at

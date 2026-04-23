@@ -150,10 +150,13 @@ async def init_db():
         # self-triggered query that went through the full orchestrator pipeline
         # (mandate → x402 payments → audit trail). `trigger_source` = 'scheduled'
         # for the asyncio loop, 'manual' for POST /api/pulse/trigger.
+        # `query_source` tags HOW the query was picked: 'llm_generated',
+        # 'capability_registry', or 'built_in_fallback' (added in v2).
         await db.execute("""CREATE TABLE IF NOT EXISTS pulse_runs (
             run_id TEXT PRIMARY KEY,
             query TEXT NOT NULL,
             trigger_source TEXT NOT NULL,
+            query_source TEXT,
             report_id TEXT,
             summary TEXT,
             status TEXT,
@@ -168,6 +171,14 @@ async def init_db():
             completed_at TEXT
         )""")
         await db.execute("""CREATE INDEX IF NOT EXISTS idx_pulse_started ON pulse_runs(started_at DESC)""")
+
+        # Additive migration for existing deploys that have the old schema
+        # (pre-query_source). ALTER TABLE ADD COLUMN is idempotent-by-hand:
+        # we swallow the "duplicate column" error. Safe to run on every boot.
+        try:
+            await db.execute("ALTER TABLE pulse_runs ADD COLUMN query_source TEXT")
+        except Exception:
+            pass  # column already exists — existing column stays
 
         await db.commit()
     print("[DB] SQLite persistence initialized")

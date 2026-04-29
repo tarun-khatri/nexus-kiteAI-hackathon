@@ -116,6 +116,26 @@ function formatUtc(iso: string | null | undefined): string {
   }
 }
 
+/**
+ * Decide whether a payment status string represents success.
+ *
+ * Two different code paths produce these values:
+ *   - run.payments[].status from report.economy_stats.transactions →
+ *     "confirmed" / "success"
+ *   - mandate.payment_log[].status from PaymentRecordStatus enum →
+ *     "succeeded" / "failed_downstream" / "blocked_unreachable"
+ *
+ * The drill-down merges them (preferring mandate log when present), so we
+ * can see ANY of those strings here. Every spelling that means "this
+ * payment landed and the work was accepted" must be handled or we
+ * mis-render a green check as a red X.
+ */
+function isSuccessStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const s = status.toLowerCase();
+  return s === "confirmed" || s === "success" || s === "succeeded" || s === "ok";
+}
+
 function querySourceMeta(source: PulseQuerySource | undefined | null) {
   switch (source) {
     case "llm_generated":
@@ -803,7 +823,7 @@ function DrillDown({
                       ${p.amount.toFixed(6)}
                     </td>
                     <td className="py-2 pr-3 align-top">
-                      {p.status === "confirmed" || p.status === "success" ? (
+                      {isSuccessStatus(p.status) ? (
                         <CheckCircle2
                           size={12}
                           className="inline text-[var(--color-green)] mr-1"

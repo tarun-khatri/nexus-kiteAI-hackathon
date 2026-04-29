@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # and an on-chain audit trail. Set PULSE_ENABLED=false to disable (useful in
     # local dev to avoid burning faucet balance).
     pulse_enabled: bool = True
-    pulse_interval_seconds: int = 900          # 15 min between scheduled runs
+    pulse_interval_seconds: int = 3600         # 1 hour between scheduled runs
     pulse_initial_delay_seconds: int = 120     # wait 2 min after boot before first run
 
     class Config:

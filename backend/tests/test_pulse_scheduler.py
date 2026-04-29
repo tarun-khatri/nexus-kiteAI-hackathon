@@ -438,7 +438,61 @@ async def test_store_parses_new_rich_format(tmp_db):
 
 
 # ============================================================
-# 12. Store: v1 legacy string[] format is wrapped into minimal dicts
+# 13. Degraded-LLM run is persisted as status=error with error_message
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_run_once_persists_router_unavailable_with_error_message(
+    tmp_db, fresh_scheduler,
+):
+    """
+    When the LLM router is exhausted, report_agent.handle_request returns
+    a short-circuit dict with status='error', error_code='router_unavailable',
+    and a 'message' field. The pulse row must persist as status='error'
+    with a meaningful error_message — not a blank panel that leaves judges
+    guessing.
+    """
+    from backend.pulse.store import load_pulse_runs
+    import backend.main as main_module
+
+    LLM_DOWN_REPORT = {
+        "report_id": "rpt-error-1",
+        "query": "BTC sentiment",
+        "status": "error",
+        "error_code": "router_unavailable",
+        "message": "The LLM router is currently unavailable. Please try again shortly.",
+        "sections": {},
+        # No economy_stats / no audit_trail in short-circuit responses
+    }
+
+    with patch.object(
+        main_module,
+        "report_agent",
+        new=type("X", (), {"handle_request": AsyncMock(return_value=LLM_DOWN_REPORT)})(),
+    ):
+        with patch(
+            "backend.pulse.scheduler.ws_manager.broadcast", new=AsyncMock()
+        ):
+            run = await fresh_scheduler.run_once(
+                "BTC sentiment", trigger_source="scheduled",
+                query_source="llm_generated",
+            )
+
+    assert run["status"] == "error"
+    assert run["agents_involved"] == 0
+    # error_message must include both the code and the human-readable bit
+    assert "router_unavailable" in (run["error_message"] or "")
+    assert "LLM router" in (run["error_message"] or "")
+
+    # Round-trip through DB
+    rows = await load_pulse_runs(limit=10)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert "router_unavailable" in (rows[0]["error_message"] or "")
+
+
+# ============================================================
+# 14. Store: v1 legacy string[] format is wrapped into minimal dicts
 # ============================================================
 
 @pytest.mark.asyncio

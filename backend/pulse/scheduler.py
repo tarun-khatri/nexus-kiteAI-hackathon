@@ -231,6 +231,24 @@ class PulseScheduler:
                 "status": t.get("status") or "confirmed",
             })
 
+        # When the LLM router is exhausted (Groq rate-limited AND Gemini key
+        # invalid AND Ollama unavailable), report_agent short-circuits with
+        # status="error", error_code="router_unavailable" and a `message`
+        # field. We propagate those into the persisted row's error_message
+        # so judges drilling into a red row see the actual reason instead
+        # of a blank panel. Also covers "not_in_scope" and "no_agent_available".
+        run_status = report.get("status") or "ok"
+        report_error_code = report.get("error_code")
+        report_error_message = report.get("message") or report.get("error")
+        composed_error: Optional[str] = None
+        if run_status == "error" or report_error_code:
+            parts: list[str] = []
+            if report_error_code:
+                parts.append(f"[{report_error_code}]")
+            if report_error_message:
+                parts.append(str(report_error_message))
+            composed_error = " ".join(parts) if parts else "Run completed with errors"
+
         run_dict = {
             "run_id": run_id,
             "query": query,
@@ -238,14 +256,14 @@ class PulseScheduler:
             "query_source": query_source,
             "report_id": report.get("report_id"),
             "summary": (report.get("summary") or "")[:500],
-            "status": report.get("status") or "ok",
+            "status": run_status,
             "agents_involved": int(economy.get("agents_involved") or 0),
             "total_cost_usdc": float(economy.get("total_cost_usdc") or 0.0),
             "total_time_ms": int(economy.get("total_time_ms") or 0),
             "audit_tx_hash": audit_tx_hash,
             "payment_tx_hashes_json": json.dumps(payments_detail),
             "mandate_id": vi.get("mandate_id"),
-            "error_message": None,
+            "error_message": composed_error,
             "started_at": started_at.isoformat(),
             "completed_at": completed_at.isoformat(),
         }
@@ -265,14 +283,20 @@ class PulseScheduler:
                 self._finalize_audit_tx(run_id, trail_id, run_dict)
             )
 
-        # Pretty log for ops visibility
+        # Pretty log for ops visibility — includes status + error so a
+        # `docker compose logs backend | grep "\[Pulse\]"` immediately tells
+        # us if runs are degrading silently.
         tx_hint = audit_tx_hash[:16] + "…" if audit_tx_hash else "(no chain tx)"
+        status_tag = run_dict["status"]
+        err_tag = (
+            f" err={composed_error[:80]}" if composed_error else ""
+        )
         print(
-            f"[Pulse] Run #{self._run_count + 1} ({query_source}): "
+            f"[Pulse] Run #{self._run_count + 1} [{status_tag}] ({query_source}): "
             f"'{query}' — "
             f"{run_dict['agents_involved']} agents, "
             f"${run_dict['total_cost_usdc']:.4f}, "
-            f"{run_dict['total_time_ms']}ms, tx={tx_hint}"
+            f"{run_dict['total_time_ms']}ms, tx={tx_hint}{err_tag}"
         )
 
         await ws_manager.broadcast(NexusEvent(

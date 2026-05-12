@@ -13,7 +13,13 @@ class Settings(BaseSettings):
 
     # --- Free LLM APIs ---
     groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: Optional[str] = None
+    # Gemini model name. Pinned to current free-tier model. Older names like
+    # `gemini-2.0-flash` were deprecated by Google for new API projects in
+    # early 2026 — new keys get HTTP 404 on those. `gemini-2.5-flash` is the
+    # current free-tier flash model. Override via env if a newer one ships.
+    gemini_model: str = "gemini-2.5-flash"
     ollama_enabled: bool = True
     ollama_model: str = "llama3.1:8b"
 

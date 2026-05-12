@@ -41,13 +41,15 @@ class LLMRouter:
             except Exception as e:
                 print(f"[LLM] Groq init failed: {e}")
 
-        # Try Gemini
+        # Try Gemini. Model name comes from settings so we can swap when
+        # Google deprecates one (they deprecated gemini-2.0-flash for new API
+        # keys in early 2026 — fresh keys got HTTP 404 on it).
         if settings.gemini_api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=settings.gemini_api_key)
-                self._gemini_model = genai.GenerativeModel("gemini-2.0-flash")
-                print("[LLM] Gemini client initialized (Gemini 2.0 Flash, free tier)")
+                self._gemini_model = genai.GenerativeModel(settings.gemini_model)
+                print(f"[LLM] Gemini client initialized ({settings.gemini_model}, free tier)")
             except ImportError:
                 print("[LLM] Google GenAI package not installed, skipping")
             except Exception as e:
@@ -128,8 +130,11 @@ class LLMRouter:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        # Model name comes from settings — easy to swap to llama-3.1-8b-instant
+        # if the 70B model's daily quota becomes a recurring problem (8b has
+        # much higher per-day limits on Groq's free tier).
         response = await self._groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=settings.groq_model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=0.3,

@@ -7,8 +7,6 @@
 # --- Secrets (NEVER commit) -------------------------------------------------
 # Env files that hold real API keys, deployer private keys, Twitter tokens.
 # .env.example / .env.prod.example ARE committed (templates, no secrets).
-.env
-.env.local
 .env.prod
 backend/.env
 twitter-service/.env
@@ -118,3 +116,4 @@ dist/
 *.tar.gz
 /tmp/
 /temp/
+config.bat

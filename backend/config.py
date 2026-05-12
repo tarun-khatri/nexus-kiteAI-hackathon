@@ -15,11 +15,17 @@ class Settings(BaseSettings):
     groq_api_key: Optional[str] = None
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: Optional[str] = None
-    # Gemini model name. Pinned to current free-tier model. Older names like
-    # `gemini-2.0-flash` were deprecated by Google for new API projects in
-    # early 2026 — new keys get HTTP 404 on those. `gemini-2.5-flash` is the
-    # current free-tier flash model. Override via env if a newer one ships.
-    gemini_model: str = "gemini-2.5-flash"
+    # Gemini model. `gemini-2.5-flash-lite` is the official drop-in successor
+    # to the (now-deprecated) `gemini-2.0-flash` — same speed, same JSON
+    # discipline, NO "thinking tokens" eating the max_output_tokens budget.
+    #
+    # Do NOT switch this to `gemini-2.5-flash` without also raising
+    # max_tokens in every call site to ~3000+ — 2.5-flash burns 1000-2000
+    # tokens on internal chain-of-thought reasoning before it starts writing
+    # the actual response, so a max_tokens=260 classify call gets truncated
+    # mid-JSON (`{"in_scope": true, "capabilities": ["` — silent corruption
+    # that surfaces as "router_unavailable" via the JSON parser).
+    gemini_model: str = "gemini-2.5-flash-lite"
     ollama_enabled: bool = True
     ollama_model: str = "llama3.1:8b"
 
